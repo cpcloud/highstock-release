@@ -2,7 +2,7 @@
 // @compilation_level SIMPLE_OPTIMIZATIONS
 
 /**
- * @license Highstock JS v2.0.4 (2014-09-02)
+ * @license Highstock JS v2.0.4-modified ()
  *
  * (c) 2009-2014 Torstein Honsi
  *
@@ -57,7 +57,7 @@ var UNDEFINED,
 	charts = [],
 	chartCount = 0,
 	PRODUCT = 'Highstock',
-	VERSION = '2.0.4',
+	VERSION = '2.0.4-modified',
 
 	// some constants for frequently used strings
 	DIV = 'div',
@@ -441,6 +441,7 @@ dateFormat = function (format, timestamp, capitalize) {
 			'A': langWeekdays[day], // Long weekday, like 'Monday'
 			'd': pad(dayOfMonth), // Two digit day of the month, 01 to 31
 			'e': dayOfMonth, // Day of the month, 1 through 31
+			'w': day,
 
 			// Week (none implemented)
 			//'W': weekNumber(),
@@ -745,8 +746,8 @@ timeUnits = {
 	hour: 3600000,
 	day: 24 * 3600000,
 	week: 7 * 24 * 3600000,
-	month: 31 * 24 * 3600000,
-	year: 31556952000
+	month: 28 * 24 * 3600000,
+	year: 364 * 24 * 3600000
 };
 /**
  * Path interpolation algorithm used across adapters
@@ -1270,8 +1271,8 @@ defaultOptions = {
 	global: {
 		useUTC: true,
 		//timezoneOffset: 0,
-		canvasToolsURL: 'http://code.highcharts.com/stock/2.0.4/modules/canvas-tools.js',
-		VMLRadialGradientURL: 'http://code.highcharts.com/stock/2.0.4/gfx/vml-radial-gradient.png'
+		canvasToolsURL: 'http://code.highcharts.com/stock/2.0.4-modified/modules/canvas-tools.js',
+		VMLRadialGradientURL: 'http://code.highcharts.com/stock/2.0.4-modified/gfx/vml-radial-gradient.png'
 	},
 	chart: {
 		//animation: true,
@@ -1535,6 +1536,7 @@ defaultOptions = {
 			month: '%B %Y',
 			year: '%Y'
 		},
+		footerFormat: '',
 		//formatter: defaultFormatter,
 		headerFormat: '<span style="font-size: 10px">{point.key}</span><br/>',
 		pointFormat: '<span style="color:{series.color}">\u25CF</span> {series.name}: <b>{point.y}</b><br/>',
@@ -7086,7 +7088,7 @@ Axis.prototype = {
 			length,
 			linkedParentExtremes,
 			tickIntervalOption = options.tickInterval,
-			minTickIntervalOption = options.minTickInterval,
+			minTickInterval,
 			tickPixelIntervalOption = options.tickPixelInterval,
 			tickPositions,
 			keepTwoTicksOnly,
@@ -7201,8 +7203,10 @@ Axis.prototype = {
 		}
 
 		// Before normalizing the tick interval, handle minimum tick interval. This applies only if tickInterval is not defined.
-		if (!tickIntervalOption && axis.tickInterval < minTickIntervalOption) {
-			axis.tickInterval = minTickIntervalOption;
+		// docs: defaults to closest point range on datetime axis
+		minTickInterval = pick(options.minTickInterval, axis.isDatetimeAxis && axis.closestPointRange);
+		if (!tickIntervalOption && axis.tickInterval < minTickInterval) {
+			axis.tickInterval = minTickInterval;
 		}
 
 		// for linear axes, get magnitude and normalize the interval
@@ -7319,6 +7323,10 @@ Axis.prototype = {
 			key = axis._maxTicksKey,
 			tickPositions = axis.tickPositions,
 			maxTicks = chart.maxTicks;
+
+		if (!tickPositions) { 
+			return; //#3411 if there are no ticks, the amount should not be adjusted
+		}
 
 		if (maxTicks && maxTicks[key] && !axis.isDatetimeAxis && !axis.categories && !axis.isLinked &&
 				axis.options.alignTicks !== false && this.min !== UNDEFINED) {
@@ -7510,10 +7518,10 @@ Axis.prototype = {
 
 		// Check for percentage based input values
 		if (percentRegex.test(height)) {
-			height = parseInt(height, 10) / 100 * chart.plotHeight;
+			height = parseFloat(height) / 100 * chart.plotHeight;
 		}
 		if (percentRegex.test(top)) {
-			top = parseInt(top, 10) / 100 * chart.plotHeight + chart.plotTop;
+			top = parseFloat(top) / 100 * chart.plotHeight + chart.plotTop;
 		}
 
 		// Expose basic values to use in Series object and navigator
@@ -8769,7 +8777,7 @@ Tooltip.prototype = {
 			s;
 
 		// build the header
-		s = [tooltip.tooltipHeaderFormatter(items[0])];
+		s = [tooltip.tooltipFooterHeaderFormatter(items[0])]; //#3397: abstraction to enable formatting of footer and header
 
 		// build the values
 		each(items, function (item) {
@@ -8779,7 +8787,7 @@ Tooltip.prototype = {
 		});
 
 		// footer
-		s.push(tooltip.options.footerFormat || '');
+		s.push(tooltip.tooltipFooterHeaderFormatter(items[0], true)); //#3397: abstraction to enable formatting of footer and header
 
 		return s.join('');
 	},
@@ -8905,52 +8913,91 @@ Tooltip.prototype = {
 		);
 	},
 
+	/** 
+	 * Get the best X date format based on the closest point range on the axis.
+	 */
+	getXDateFormat: function (point, options, xAxis) {
+		var xDateFormat,
+			dateTimeLabelFormats = options.dateTimeLabelFormats,
+			closestPointRange = xAxis && xAxis.closestPointRange,
+			n,
+			blank = '01-01 00:00:00.000',
+			strpos = {
+				millisecond: 15,
+				second: 12,
+				minute: 9,
+				hour: 6,
+				day: 3
+			},
+			date,
+			lastN;
+
+		if (closestPointRange) {
+			date = dateFormat('%m-%d %H:%M:%S.%L', point.x);
+			for (n in timeUnits) {
+
+				// If the range is exactly one week and we're looking at a Sunday/Monday, go for the week format
+				if (closestPointRange === timeUnits.week && +dateFormat('%w', point.x) === xAxis.options.startOfWeek && 
+						date.substr(6) === blank.substr(6)) {
+					n = 'week';
+					break;
+
+				// The first format that is too great for the range
+				} else if (timeUnits[n] > closestPointRange) {
+					n = lastN;
+					break;
+				
+				// If the point is placed every day at 23:59, we need to show
+				// the minutes as well. #2637.
+				} else if (strpos[n] && date.substr(strpos[n]) !== blank.substr(strpos[n])) {
+					break;
+				}
+
+				// Weeks are outside the hierarchy, only apply them on Mondays/Sundays like in the first condition
+				if (n !== 'week') {
+					lastN = n;
+				}
+			}
+			
+			if (n) {
+				xDateFormat = dateTimeLabelFormats[n];
+			}
+		} else {
+			xDateFormat = dateTimeLabelFormats.day;
+		}
+
+		return xDateFormat || dateTimeLabelFormats.year; // #2546, 2581
+	},
 
 	/**
-	 * Format the header of the tooltip
+	 * Format the footer/header of the tooltip
+	 * #3397: abstraction to enable formatting of footer and header
 	 */
-	tooltipHeaderFormatter: function (point) {
-		var series = point.series,
+	tooltipFooterHeaderFormatter: function (point, isFooter) {
+		var footOrHead = isFooter ? 'footer' : 'header',
+			series = point.series,
 			tooltipOptions = series.tooltipOptions,
-			dateTimeLabelFormats = tooltipOptions.dateTimeLabelFormats,
 			xDateFormat = tooltipOptions.xDateFormat,
 			xAxis = series.xAxis,
 			isDateTime = xAxis && xAxis.options.type === 'datetime' && isNumber(point.key),
-			headerFormat = tooltipOptions.headerFormat,
-			closestPointRange = xAxis && xAxis.closestPointRange,
-			n;
+			formatString = tooltipOptions[footOrHead+'Format'];
 
-		// Guess the best date format based on the closest point distance (#568)
+		// Guess the best date format based on the closest point distance (#568, #3418)
 		if (isDateTime && !xDateFormat) {
-			if (closestPointRange) {
-				for (n in timeUnits) {
-					if (timeUnits[n] >= closestPointRange || 
-							// If the point is placed every day at 23:59, we need to show
-							// the minutes as well. This logic only works for time units less than 
-							// a day, since all higher time units are dividable by those. #2637.
-							(timeUnits[n] <= timeUnits.day && point.key % timeUnits[n] > 0)) {
-						xDateFormat = dateTimeLabelFormats[n];
-						break;
-					}
-				}
-			} else {
-				xDateFormat = dateTimeLabelFormats.day;
-			}
-
-			xDateFormat = xDateFormat || dateTimeLabelFormats.year; // #2546, 2581
-
+			xDateFormat = this.getXDateFormat(point, tooltipOptions, xAxis);
 		}
 
-		// Insert the header date format if any
+		// Insert the footer date format if any
 		if (isDateTime && xDateFormat) {
-			headerFormat = headerFormat.replace('{point.key}', '{point.key:' + xDateFormat + '}');
+			formatString = formatString.replace('{point.key}', '{point.key:' + xDateFormat + '}');
 		}
 
-		return format(headerFormat, {
+		return format(formatString, {
 			point: point,
 			series: series
 		});
 	}
+
 };
 
 var hoverChartIndex;
@@ -9131,6 +9178,7 @@ Pointer.prototype = {
 				tooltip.refresh(points, e);
 				pointer.hoverX = points[0].clientX;
 			}
+			point = points[0];
 		}
 
 		// Separate tooltip and general mouse events
@@ -13774,7 +13822,7 @@ Series.prototype = {
 			below;
 
 		if (negativeColor && (graph || area)) {
-			translatedThreshold = mathRound(yAxis.toPixels(options.threshold || 0, true));
+			translatedThreshold = mathMin(mathRound(yAxis.toPixels(options.threshold || 0, true)), chartSizeMax); // #3382
 			if (translatedThreshold < 0) {
 				chartSizeMax -= translatedThreshold; // #2534
 			}
@@ -14779,10 +14827,12 @@ extend(Series.prototype, {
 		extend(this, seriesTypes[newOptions.type || oldType].prototype);
 
 		// Re-register groups (#3094)
-		each(preserve, function (prop) {
-			series[prop] = preserve[prop];
-		});
-
+		// unless it's a new type (#3402)
+		if (!newOptions.type || (newOptions.type === oldType)) { 
+			each(preserve, function (prop) {
+				series[prop] = preserve[prop];
+			});
+		}
 
 		this.init(chart, newOptions);
 		chart.linkSeries(); // Links are lost in this.remove (#3028)
@@ -17504,7 +17554,7 @@ extend(Series.prototype, {
 			}
 
 			if (state) {
-				lineWidth = stateOptions[state].lineWidth || lineWidth + (stateOptions[state].lineWidthPlus || 0);
+				lineWidth = (stateOptions[state].lineWidth || lineWidth) + (stateOptions[state].lineWidthPlus || 0);
 			}
 
 			if (graph && !graph.dashstyle) { // hover is turned off for dashed lines in VML
@@ -17593,6 +17643,7 @@ extend(Series.prototype, {
 			low,
 			high,
 			xAxis = series.xAxis,
+			halfPointRange = ((xAxis && xAxis.pointRange) || 0) / 2,
 			xExtremes = xAxis && xAxis.getExtremes(),
 			axisLength = xAxis ? (xAxis.tooltipLen || xAxis.len) : series.chart.plotSizeX, // tooltipLen and tooltipPosName used in polar
 			point,
@@ -17631,7 +17682,7 @@ extend(Series.prototype, {
 		for (i = 0; i < pointsLength; i++) {
 			point = points[i];
 			pointX = point.x;
-			if (pointX >= xExtremes.min && pointX <= xExtremes.max) { // #1149
+			if (pointX >= xExtremes.min - halfPointRange && pointX <= xExtremes.max + halfPointRange) { // #1149, #3152
 				nextPoint = points[i + 1];
 
 				// Set this range's low to the last range's high plus one
@@ -18344,7 +18395,7 @@ var DATA_GROUPING = 'dataGrouping',
 	baseProcessData = seriesProto.processData,
 	baseGeneratePoints = seriesProto.generatePoints,
 	baseDestroy = seriesProto.destroy,
-	baseTooltipHeaderFormatter = tooltipProto.tooltipHeaderFormatter,
+	baseTooltipFooterHeaderFormatter = tooltipProto.tooltipFooterHeaderFormatter,
 	NUMBER = 'number',
 
 	commonOptions = {
@@ -18713,7 +18764,7 @@ seriesProto.generatePoints = function () {
 /**
  * Extend the original method, make the tooltip's header reflect the grouped range
  */
-tooltipProto.tooltipHeaderFormatter = function (point) {
+tooltipProto.tooltipFooterHeaderFormatter = function (point, isFooter) {
 	var tooltip = this,
 		series = point.series,
 		options = series.options,
@@ -18726,7 +18777,6 @@ tooltipProto.tooltipHeaderFormatter = function (point) {
 		dateTimeLabelFormats,
 		labelFormats,
 		formattedKey,
-		n,
 		ret;
 
 	// apply only to grouped series
@@ -18749,17 +18799,7 @@ tooltipProto.tooltipHeaderFormatter = function (point) {
 		// so if the least distance between points is one minute, show it, but if the
 		// least distance is one day, skip hours and minutes etc.
 		} else if (!xDateFormat && dateTimeLabelFormats) {
-			for (n in timeUnits) {
-				if (timeUnits[n] >= xAxis.closestPointRange || 
-						// If the point is placed every day at 23:59, we need to show
-						// the minutes as well. This logic only works for time units less than 
-						// a day, since all higher time units are dividable by those. #2637.
-						(timeUnits[n] <= timeUnits.day && point.key % timeUnits[n] > 0)) {
-						
-					xDateFormat = dateTimeLabelFormats[n][0];
-					break;
-				}
-			}
+			xDateFormat = tooltip.getXDateFormat(point, tooltipOptions, xAxis);
 		}
 
 		// now format the key
@@ -18769,11 +18809,11 @@ tooltipProto.tooltipHeaderFormatter = function (point) {
 		}
 
 		// return the replaced format
-		ret = tooltipOptions.headerFormat.replace('{point.key}', formattedKey);
+		ret = tooltipOptions[(isFooter ? 'footer' : 'header') + 'Format'].replace('{point.key}', formattedKey);
 
 	// else, fall back to the regular formatter
 	} else {
-		ret = baseTooltipHeaderFormatter.call(tooltip, point);
+		ret = baseTooltipFooterHeaderFormatter.call(tooltip, point, isFooter);
 	}
 
 	return ret;
@@ -21196,33 +21236,38 @@ RangeSelector.prototype = {
 			div = rangeSelector.div,
 			inputGroup = rangeSelector.inputGroup,
 			buttonTheme = options.buttonTheme,
+			buttonPosition = options.buttonPosition || {},
 			inputEnabled = options.inputEnabled !== false,
 			states = buttonTheme && buttonTheme.states,
 			plotLeft = chart.plotLeft,
 			yAlign,
-			buttonLeft;
+			buttonLeft,
+			buttonTop;
+
 
 		// create the elements
 		if (!rangeSelector.rendered) {
-			rangeSelector.zoomText = renderer.text(lang.rangeSelectorZoom, plotLeft, chart.plotTop - 20)
+			rangeSelector.zoomText = renderer.text(lang.rangeSelectorZoom, pick(buttonPosition.x, plotLeft), pick(buttonPosition.y, chart.plotTop - 35) + 15)
 				.css(options.labelStyle)
 				.add();
 
 			// button starting position
-			buttonLeft = plotLeft + rangeSelector.zoomText.getBBox().width + 5;
+			buttonLeft = pick(buttonPosition.x, plotLeft) + rangeSelector.zoomText.getBBox().width + 5;
+			buttonTop = pick(buttonPosition.y, chart.plotTop - 35);
 
 			each(rangeSelector.buttonOptions, function (rangeOptions, i) {
 				buttons[i] = renderer.button(
 						rangeOptions.text,
 						buttonLeft,
-						chart.plotTop - 35,
+						buttonTop,
 						function () {
 							rangeSelector.clickButton(i);
 							rangeSelector.isActive = true;
 						},
 						buttonTheme,
 						states && states.hover,
-						states && states.select
+						states && states.select,
+						states && states.disabled
 					)
 					.css({
 						textAlign: 'center'
@@ -21613,7 +21658,7 @@ Axis.prototype.getPlotLinePath = function (value, lineWidth, old, force, transla
 		x2,
 		y2,
 		result = [],
-		axes,
+		axes = [], //#3416 need a default array
 		axes2,
 		uniqueAxes;
 
@@ -21648,12 +21693,14 @@ Axis.prototype.getPlotLinePath = function (value, lineWidth, old, force, transla
 	// Remove duplicates in the axes array. If there are no axes in the axes array,
 	// we are adding an axis without data, so we need to populate this with grid
 	// lines (#2796).
-	uniqueAxes = axes.length ? [] : [axis];
-	each(axes, function (axis2) {
-		if (inArray(axis2, uniqueAxes) === -1) {
-			uniqueAxes.push(axis2);
-		}
-	});
+	uniqueAxes = axes && axes.length ? [] : [axis];
+	if (axes) {
+		each(axes, function (axis2) {
+			if (inArray(axis2, uniqueAxes) === -1) {
+				uniqueAxes.push(axis2);
+			}
+		});
+	}
 	
 	translatedValue = pick(translatedValue, axis.translate(value, null, null, old));
 	
